@@ -16,17 +16,16 @@ bpy.ops.wm.open_mainfile(filepath=ANIMATION_BLEND)
 scene = bpy.context.scene
 
 # ── Render settings ───────────────────────────────────────────────────────────
-scene.render.engine       = 'BLENDER_EEVEE_NEXT'
+scene.render.engine       = 'BLENDER_EEVEE'
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.frame_start         = 1
 scene.frame_end           = 50
 
-scene.render.image_settings.file_format = 'FFMPEG'
-scene.render.ffmpeg.format              = 'MPEG4'
-scene.render.ffmpeg.codec               = 'H264'
-scene.render.ffmpeg.constant_rate_factor = 'HIGH'
-scene.render.filepath = OUTPUT_MP4
+FRAMES_DIR = os.path.join(os.path.dirname(__file__), "frames", "")
+os.makedirs(FRAMES_DIR, exist_ok=True)
+scene.render.image_settings.file_format = 'PNG'
+scene.render.filepath = FRAMES_DIR
 
 # ── Camera ────────────────────────────────────────────────────────────────────
 cam_data = bpy.data.cameras.new("Camera")
@@ -56,7 +55,23 @@ bg = world.node_tree.nodes["Background"]
 bg.inputs["Color"].default_value    = (0.8, 0.85, 0.9, 1.0)
 bg.inputs["Strength"].default_value = 0.6
 
-# ── Render ────────────────────────────────────────────────────────────────────
-print(f"Rendering frames {scene.frame_start}–{scene.frame_end} → {OUTPUT_MP4}")
+# ── Render PNG sequence ───────────────────────────────────────────────────────
+print(f"Rendering frames {scene.frame_start}–{scene.frame_end} → {FRAMES_DIR}")
 bpy.ops.render.render(animation=True)
-print(f"Done. Saved: {OUTPUT_MP4}")
+print("Frames done.")
+
+# ── Stitch to MP4 with system ffmpeg ─────────────────────────────────────────
+import subprocess
+fps = scene.render.fps
+cmd = [
+    "ffmpeg", "-y",
+    "-framerate", str(fps),
+    "-i", os.path.join(FRAMES_DIR, "%04d.png"),
+    "-c:v", "libx264",
+    "-pix_fmt", "yuv420p",
+    "-crf", "18",
+    OUTPUT_MP4,
+]
+print("Stitching MP4 …", " ".join(cmd))
+subprocess.run(cmd, check=True)
+print(f"\nDone. Saved: {OUTPUT_MP4}")
