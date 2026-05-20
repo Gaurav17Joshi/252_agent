@@ -1,0 +1,59 @@
+{
+    "simulation": {
+        "fps": 24,
+        "frame_start": 1,
+        "frame_end": 200,
+        "substeps_per_frame": 10,
+        "solver_iterations": 20
+    },
+    "ground": {
+        "friction": 0.6,
+        "restitution": 0.05
+    },
+    "objects": {
+        "object_0": {
+            "label": "briefcase",
+            "mass": 2.0,
+            "friction": 0.5,
+            "restitution": 0.1,
+            "linear_damping": 0.04,
+            "angular_damping": 0.1,
+            "collision_shape": "CONVEX_HULL",
+            "initial_linear_velocity": [0.0, 0.0, 0.0],
+            "initial_angular_velocity": [0.0, 0.0, 0.0]
+        },
+        "object_1": {
+            "label": "toy block sorter",
+            "mass": 0.4,
+            "friction": 0.6,
+            "restitution": 0.2,
+            "linear_damping": 0.05,
+            "angular_damping": 0.1,
+            "collision_shape": "CONVEX_HULL",
+            "initial_linear_velocity": [0.0, 0.0, 0.0],
+            "initial_angular_velocity": [0.0, 0.0, 0.0]
+        },
+        "object_2": {
+            "label": "cushion",
+            "mass": 0.6,
+            "friction": 0.9,
+            "restitution": 0.05,
+            "linear_damping": 0.15,
+            "angular_damping": 0.3,
+            "collision_shape": "CONVEX_HULL",
+            "initial_linear_velocity": [0.0, 0.0, 0.0],
+            "initial_angular_velocity": [0.0, 0.0, 0.0]
+        },
+        "object_3": {
+            "label": "pouf",
+            "mass": 5.0,
+            "friction": 0.5,
+            "restitution": 0.05,
+            "linear_damping": 0.04,
+            "angular_damping": 0.1,
+            "collision_shape": "CONVEX_HULL",
+            "initial_linear_velocity": [2.5, 0.0, 0.0],
+            "initial_angular_velocity": [0.0, 0.0, 0.0]
+        }
+    }
+}
