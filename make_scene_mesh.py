@@ -8,9 +8,14 @@ Produces scene_meshes.glb — import into Blender via File > Import > glTF 2.0
 """
 
 import glob
+import sys
 import numpy as np
 import torch
 import trimesh
+
+# Optional CLI args: python make_scene_mesh.py <objects_dir> <output.glb>
+OBJECTS_DIR = sys.argv[1] if len(sys.argv) > 1 else "objects"
+OUTPUT_GLB  = sys.argv[2] if len(sys.argv) > 2 else "scene_meshes.glb"
 
 # The z→y rotation baked into every glb by to_glb():
 #   glb_verts = local_verts @ Z2Y
@@ -60,14 +65,14 @@ def place_mesh(glb, rotation_q, translation, scale):
 
 
 # ── Load and place each object ────────────────────────────────────────────────
-glb_files = sorted(glob.glob("objects/object_*.glb"))
-print(f"Found {len(glb_files)} objects\n")
+glb_files = sorted(glob.glob(f"{OBJECTS_DIR}/object_*.glb"))
+print(f"Found {len(glb_files)} objects in '{OBJECTS_DIR}'\n")
 
 scene = trimesh.Scene()
 
 for glb_path in glb_files:
     idx = glb_path.split("object_")[1].split(".")[0]
-    pose_path = f"objects/object_{idx}_pose.pt"
+    pose_path = f"{OBJECTS_DIR}/object_{idx}_pose.pt"
 
     pose        = torch.load(pose_path, map_location="cpu", weights_only=False)
     rotation_q  = pose["rotation"].squeeze().numpy()
@@ -86,7 +91,7 @@ for glb_path in glb_files:
     scene.add_geometry(mesh, node_name=f"object_{idx}")
     print(f"  → placed in scene\n")
 
-out_path = "scene_meshes.glb"
+out_path = OUTPUT_GLB
 scene.export(out_path)
 print(f"Saved: {out_path}")
 print("Import into Blender: File > Import > glTF 2.0 (.glb/.gltf)")

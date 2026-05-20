@@ -129,6 +129,27 @@ pip install trimesh torch numpy
 
 ---
 
+## Physics tuning notes
+
+### Frame-1 pop artifact
+Objects jump slightly on frame 1 because Blender wraps each convex hull in an invisible collision margin (default 4 cm). When meshes are placed close together or slightly intersecting (e.g. stacked objects from scan data), those margins overlap and the solver violently separates them on the first frame.
+
+**Key finding — `substeps_per_frame` is the main lever:**
+- Higher substeps (e.g. 20) = solver applies penetration correction more aggressively each substep → **bigger pop**
+- Lower substeps (e.g. 5–10) = gentler correction → **smaller pop**
+- `substeps_per_frame = 10` (default in `physics2.json`) gives an acceptable small pop for stacked-object scenes
+- Do **not** raise substeps to fix the pop — it makes it worse
+
+### Floor snapping vs. `--no-snap`
+- `make_blend.py` default: snaps every object individually to z=0 (bottom of bounding box touches floor). Good for physics (no intersections), bad visually for stacked objects.
+- `--no-snap --z-offset=<m>`: preserves relative positions from scan. Required when objects are stacked on top of each other. Objects may slightly intersect, causing a small frame-1 pop — this is acceptable.
+- Find `z-offset` by trial: run `make_blend.py` with different values and open the `.blend` to check.
+
+### Making an object fixed (not moved by physics)
+Set `"fixed": true` in `physics.json` for that object. It becomes a `PASSIVE` rigid body — other objects collide with and bounce off it, but it never moves. Used for the kid in scene 2.
+
+---
+
 ## Next steps / planned
 
 - [ ] LLM agent layer: parse text commands → modify `physics.json` → re-run `animation2.py`
