@@ -146,6 +146,23 @@ def _mask_to_rle(mask: np.ndarray) -> str:
     return json.dumps({"size": list(mask.shape), "counts": counts})
 
 
+def decode_mask(rle: str, h: int, w: int) -> np.ndarray:
+    """
+    Decode a run-length encoded string (produced by ``_mask_to_rle``) back
+    into a boolean 2-D numpy array of shape (h, w).
+    """
+    blob = json.loads(rle)
+    counts = blob["counts"]
+    flat = np.zeros(h * w, dtype=bool)
+    idx = 0
+    val = 0
+    for run in counts:
+        flat[idx:idx + run] = bool(val)
+        idx += run
+        val = 1 - val
+    return flat.reshape((h, w), order="F")
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 def _get_mask_center(mask: np.ndarray) -> tuple[float, float]:

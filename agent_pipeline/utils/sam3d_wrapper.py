@@ -117,7 +117,7 @@ def generate_mesh(
     # Decode binary mask
     from utils.sam2_wrapper import decode_mask
     h, w = image.shape[:2]
-    binary_mask = decode_mask(mask_data["mask_rle"], h, w)
+    binary_mask = decode_mask(mask_data["rle"], h, w)
 
     extra_kwargs: dict[str, Any] = {}
     if refinement_hints:

@@ -45,10 +45,17 @@ Decide whether the highlighted region is relevant to the simulation.
 Respond with ONLY a JSON object — no markdown, no explanation:
 {{
   "keep": true or false,
-  "label": "short object name (e.g. ball, table, bottle)",
-  "reason": "one sentence explaining the decision",
+  "label": "short generic type (e.g. box, person, bottle, table)",
+  "object_name": "specific descriptive/positional name (e.g. topmost box, second box from left, person in foreground, red bottle on right)",
+  "description": "one sentence describing what this object is and where it sits in the scene",
+  "reason": "one sentence explaining the relevance decision",
   "relevance_score": <float 0.0–1.0>
 }}
+
+Guidelines for object_name:
+  - Use position when objects are of the same type: "topmost box", "bottom-left box", "second box from left"
+  - Use appearance when objects differ: "red ball", "tall bottle", "wooden table"
+  - Use role when clear: "person holding box", "falling object"
 
 Scoring guide:
   0.8–1.0  directly involved in the physics interaction
@@ -196,6 +203,8 @@ class SemanticRelevanceAgent(ClaudeAgent):
                 relevant_masks.append({
                     **mask_info,
                     "label":           decision.get("label", f"object_{i}"),
+                    "object_name":     decision.get("object_name", decision.get("label", f"object_{i}")),
+                    "description":     decision.get("description", ""),
                     "reason":          decision.get("reason", ""),
                     "relevance_score": float(decision.get("relevance_score", 0.0)),
                 })
@@ -209,6 +218,8 @@ class SemanticRelevanceAgent(ClaudeAgent):
         relevant_objects = [
             {
                 "label":           m["label"],
+                "object_name":     m.get("object_name", m["label"]),
+                "description":     m.get("description", ""),
                 "relevance_score": m["relevance_score"],
                 "reason":          m.get("reason", ""),
                 "bbox":            m.get("bbox"),
@@ -273,7 +284,7 @@ class SemanticRelevanceAgent(ClaudeAgent):
 
         response = self.client.messages.create(
             model=cfg.CLAUDE_MODEL,
-            max_tokens=256,
+            max_tokens=512,
             system=_EVAL_SYSTEM,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -322,8 +333,8 @@ if __name__ == "__main__":
         print("\n=== Relevant Objects ===")
         for obj in result["relevant_objects"]:
             print(
-                f"  {obj['label']:20s}"
+                f"  {obj['label']:15s}"
+                f"  name={obj.get('object_name',''):30s}"
                 f"  score={obj['relevance_score']:.2f}"
-                f"  bbox={obj['bbox']}"
-                f"  reason={obj['reason']}"
+                f"  desc={obj.get('description','')}"
             )
