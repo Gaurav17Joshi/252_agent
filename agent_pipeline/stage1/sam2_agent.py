@@ -124,6 +124,81 @@ class SAM2Agent(ClaudeAgent):
 
     # ── public ────────────────────────────────────────────────────────────────
 
+    def run_for_image(
+        self,
+        image_path: str,
+        run_directory: Path,
+    ) -> list[dict]:
+        """
+        Generate candidate masks for the whole image via uniform point sampling.
+
+        Calls the SAM2 automatic mask generator (no prior object labels needed)
+        and returns all raw masks for downstream filtering by the Semantic
+        Relevance Agent.
+
+        Writes ``candidate_masks.json`` to *run_directory*.
+        """
+        from utils.sam2_wrapper import generate_masks as _gen
+
+        _log.info("SAM2: generating candidate masks for image: %s", image_path)
+
+        # Pass a single sentinel object so generate_masks runs automatic mode;
+        # the wrapper's automatic generator returns all masks it finds.
+        try:
+            from sam2.build_sam import build_sam2
+            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+            import torch
+            from PIL import Image as _PILImage
+            import numpy as _np
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent))
+            import config as _cfg
+            from utils.sam2_wrapper import _save_mask, _mask_to_rle
+
+            device     = "cuda" if torch.cuda.is_available() else "cpu"
+            sam2_model = build_sam2(
+                config_file=_cfg.SAM2_CONFIG,
+                ckpt_path=str(_cfg.SAM2_CHECKPOINT),
+                device=device,
+            )
+            mask_gen = SAM2AutomaticMaskGenerator(
+                model=sam2_model,
+                points_per_side=32,
+                pred_iou_thresh=0.7,
+                stability_score_thresh=0.85,
+                min_mask_region_area=500,
+            )
+
+            image_np  = _np.array(_PILImage.open(image_path).convert("RGB"))
+            auto_masks = mask_gen.generate(image_np)
+
+            mask_dir = run_directory / "masks"
+            mask_dir.mkdir(parents=True, exist_ok=True)
+
+            results: list[dict] = []
+            for idx, am in enumerate(auto_masks):
+                seg  = am["segmentation"].astype(bool)
+                ys, xs = _np.where(seg)
+                bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+                label = f"region_{idx:03d}"
+                mask_path = _save_mask(seg, label, mask_dir)
+                results.append({
+                    "idx":        idx,
+                    "mask_path":  str(mask_path),
+                    "confidence": float(am["predicted_iou"]),
+                    "area":       int(am["area"]),
+                    "bbox":       bbox,
+                    "rle":        _mask_to_rle(seg),
+                })
+
+        except ImportError:
+            _log.warning("SAM2 not available — returning empty candidate mask list.")
+            results = []
+
+        save_state(run_directory, "candidate_masks", {"candidate_masks": results})
+        _log.info("SAM2 produced %d candidate masks.", len(results))
+        return results
+
     def run_for_objects(
         self,
         image_path: str,

@@ -5,9 +5,9 @@ Stage 1 Runner — Scene Understanding & 3D Reconstruction
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Orchestrates the full Stage 1 pipeline:
 
-  SemanticRelevanceAgent
+  SAM2Agent  (uniform point sampling → raw candidate masks)
        ↓
-  SAM2Agent
+  SemanticRelevanceAgent  (per-mask LLM filter: keep/discard)
        ↓
   ReconstructionAgent (SAM3D)  ←─────────────────────────┐
        ↓                                                   │  Iterative
@@ -55,24 +55,32 @@ def run_stage1(
     """
     _log.info("═══ Stage 1 — Scene Understanding & 3D Reconstruction ═══")
 
-    # ── Step 1: Semantic Relevance ────────────────────────────────────────────
-    _log.info("Step 1/5 — Semantic Relevance Agent")
+    # ── Step 1: SAM2 — uniform point sampling → candidate masks ──────────────
+    _log.info("Step 1/5 — SAM2 Agent (uniform point sampling)")
+    sam2_agent = SAM2Agent()
+    candidate_masks = sam2_agent.run_for_image(image_path, run_directory)
+
+    if not candidate_masks:
+        raise RuntimeError("SAM2 Agent produced no candidate masks.")
+
+    # ── Step 2: Semantic Relevance — per-mask LLM filter ──────────────────────
+    _log.info("Step 2/5 — Semantic Relevance Agent (%d candidates)", len(candidate_masks))
     sem_agent = SemanticRelevanceAgent()
-    relevant_objects = sem_agent.run_for_scene(image_path, prompt, run_directory)
+    stage1_result = sem_agent.run_for_scene(
+        image_path=image_path,
+        masks=candidate_masks,
+        prompt=prompt,
+        run_directory=run_directory,
+    )
+
+    relevant_objects = stage1_result["relevant_objects"]
+    masks            = stage1_result["masks"]
 
     if not relevant_objects:
         raise RuntimeError(
-            "Semantic Relevance Agent returned no relevant objects. "
+            "Semantic Relevance Agent kept no masks as relevant. "
             "Try a more descriptive prompt or a different image."
         )
-
-    # ── Step 2: SAM2 Segmentation ─────────────────────────────────────────────
-    _log.info("Step 2/5 — SAM2 Agent (%d objects)", len(relevant_objects))
-    sam2_agent = SAM2Agent()
-    masks = sam2_agent.run_for_objects(image_path, relevant_objects, run_directory)
-
-    if not masks:
-        raise RuntimeError("SAM2 Agent produced no masks.")
 
     # ── Iterative Refinement Loop (Steps 3-5) ─────────────────────────────────
     reconstruction_agent = ReconstructionAgent()
