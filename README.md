@@ -39,11 +39,52 @@ python make_scene_mesh.py
 ---
 
 ### `make_blend.py`
-Imports `scene_meshes.glb` into Blender, snaps every object to the floor individually (per-object bounding-box bottom → Z=0), moves each object's origin to its geometry centre, adds a brown wood-coloured floor plane, and saves `scene.blend`.
+Imports `scene_meshes.glb` into Blender, applies placement, moves each object's origin to its geometry centre, adds a brown wood-coloured floor plane, and saves `scene.blend`.
+
+**Default behaviour (recommended):** global snap — finds the single lowest vertex across the entire scene and shifts everything up uniformly so the lowest point sits at Z=0. Relative positions (stacked objects) are preserved.
 
 ```bash
 blender --background --python make_blend.py
 ```
+
+**Flags:**
+
+| Flag | What it does |
+|---|---|
+| `--no-snap` | Skip global snap, keep original scanned Z positions |
+| `--z-offset=0.05` | Shift all objects up/down by N metres |
+| `--separate=5` | Push horizontally overlapping bounding boxes apart (up to N passes) |
+| `--config=rules.txt` | Per-object rules file (see format below) |
+
+**Per-object config file format** (`--config=rules.txt`):
+```
+0. chair      z = 0      ← snap this object's bottom to floor
+1. kid        passive    ← fixed in physics, won't move
+2. suitcase   useless    ← delete from scene
+3. basket     drop       ← drop straight down onto whatever is below it (or floor)
+4. pouf                  ← no rule: follows global flag
+```
+Keywords: `z = 0`, `passive`, `useless` / `removed`, `drop`. Can be combined (e.g. `z = 0   passive`).
+
+---
+
+### `placement_agent.py` *(optional — usually the default `make_blend.py` is enough)*
+Iterative LLM agent that fixes object placement automatically using GPT-5.4-mini vision. Run this when the default global snap leaves objects floating or poorly stacked.
+
+The agent renders the scene with EEVEE, detects bounding-box overlaps, and sends both the render and the original reference photo to GPT-5.4-mini. GPT outputs per-object placement rules (`z = 0`, `drop`, `passive`, `useless`) which are applied via `make_blend.py --config`. Repeats up to 3 times until no overlaps remain and GPT is satisfied.
+
+```bash
+export OPENAI_API_KEY=sk-...
+export BLENDER_BIN="/Applications/Blender.app/Contents/MacOS/Blender"
+python placement_agent.py
+# optional flags:
+python placement_agent.py --blend scene.blend --glb scene_meshes.glb --max-iter 3
+```
+
+Requires the following files in the working directory:
+- `object2.json` — per-object descriptions (name, description keyed by `object_0`, `object_1`, …)
+- `objects_2_masks/image.png` — the original reference photo of the real room
+- `objects_2_masks/0.png`, `2.png`, `4.png`, … — per-object segmentation masks (one PNG per object, named by object index)
 
 ---
 
