@@ -7,7 +7,7 @@ from pathlib import Path
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
-CLAUDE_MODEL: str = "claude-sonnet-4-20250514"
+CLAUDE_MODEL: str = "kimi"
 MAX_TOKENS: int = 4096
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ WORKSPACE_ROOT: Path = Path(__file__).parent / "workspace"
 # ── SAM2 (local) ─────────────────────────────────────────────────────────────
 SAM2_CHECKPOINT: str = os.environ.get(
     "SAM2_CHECKPOINT",
-    "checkpoints/sam2_hiera_large.pt",
+    "sam2/checkpoints/sam2.1_hiera_large.pt",
 )
 SAM2_CONFIG: str = os.environ.get(
     "SAM2_CONFIG",

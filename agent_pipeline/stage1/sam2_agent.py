@@ -6,7 +6,7 @@ SAM2 Agent
 Calls the local SAM2 wrapper to generate segmentation masks for every
 object that passed the Semantic Relevance Agent's threshold.
 
-Claude acts as the orchestration layer: it decides which bbox prompts to
+Claude acts as the orchestration layer: it decides which prompts to
 pass to SAM2, interprets low-confidence results, and can request a retry
 with a tighter prompt if confidence is too low.
 
@@ -19,6 +19,7 @@ Tools exposed to Claude
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import sys
@@ -36,14 +37,20 @@ Your job:
    score, and optional bounding box).
 2. Call run_sam2_segmentation to generate precise segmentation masks.
 3. Call validate_mask_quality to check for low-confidence masks.
-4. If any masks fail quality validation, retry them with adjusted prompts.
-5. Return the final list of masks as JSON with key "masks".
+4. If any masks fail quality validation, retry run_sam2_segmentation ONCE
+   for those failing objects with a tighter bounding-box prompt.
+5. Return the final list of masks as a JSON object with key "masks".
 
-Quality threshold: confidence ≥ 0.60. Masks below this threshold should be
+Quality threshold: confidence >= 0.60. Masks below this threshold must be
 retried once with a refined bounding-box prompt if possible.
+
+Your final message MUST be a JSON object of the form:
+{"masks": [ ... ]}
+No explanation, no markdown — just the JSON object.
 """
 
 MIN_CONFIDENCE = 0.60
+MAX_RETRIES = 1
 
 
 class SAM2Agent(ClaudeAgent):
@@ -51,7 +58,6 @@ class SAM2Agent(ClaudeAgent):
 
     def __init__(self) -> None:
         super().__init__()
-        self._image_path: str = ""
         self._masks: list[dict] = []
 
         self.tools = [
@@ -125,21 +131,33 @@ class SAM2Agent(ClaudeAgent):
         run_directory: Path,
     ) -> list[dict]:
         """Generate masks and write ``masks.json`` to *run_directory*."""
-        self._image_path = image_path
 
         user_msg = (
             f"Image path: {image_path}\n\n"
             f"Objects to segment ({len(relevant_objects)}):\n"
             + json.dumps(relevant_objects, indent=2)
-            + "\n\nGenerate masks, validate quality, and return the final masks JSON."
+            + "\n\nGenerate masks, validate quality, retry any failures, "
+            "and return the final masks as JSON."
         )
 
         raw_response = self.run(system=SYSTEM_PROMPT, user_message=user_msg)
+
+        # Ensure we have a plain string to parse
+        if not isinstance(raw_response, str):
+            raw_response = str(raw_response)
+
         masks = self._parse_masks(raw_response)
 
-        # Fallback: use internally stored masks if parse fails
+        # Fallback: use internally stored masks accumulated via tool calls
         if not masks and self._masks:
+            _log.warning(
+                "Could not parse masks from Claude's final response — "
+                "falling back to tool-call results."
+            )
             masks = self._masks
+
+        if not masks:
+            _log.error("No masks produced for image: %s", image_path)
 
         save_state(run_directory, "masks", {"masks": masks})
         _log.info("Masks generated for %d objects", len(masks))
@@ -154,7 +172,19 @@ class SAM2Agent(ClaudeAgent):
     ) -> dict:
         _log.info("SAM2 segmenting %d objects from %s", len(objects), image_path)
         masks = generate_masks(image_path=image_path, relevant_objects=objects)
-        self._masks = masks
+
+        # Accumulate masks across calls (initial run + retries)
+        existing_labels = {m.get("label") for m in self._masks}
+        for m in masks:
+            if m.get("label") in existing_labels:
+                # Replace old low-confidence mask with the retry result
+                self._masks = [
+                    m if existing.get("label") == m.get("label") else existing
+                    for existing in self._masks
+                ]
+            else:
+                self._masks.append(m)
+
         return {"status": "ok", "mask_count": len(masks), "masks": masks}
 
     def _validate_mask_quality(
@@ -178,17 +208,33 @@ class SAM2Agent(ClaudeAgent):
 
     @staticmethod
     def _parse_masks(text: str) -> list[dict]:
-        for start in ["{", "["]:
-            idx = text.find(start)
-            if idx != -1:
-                try:
-                    blob = json.loads(text[idx:])
-                    if isinstance(blob, list):
-                        return blob
-                    if isinstance(blob, dict):
-                        for key in ("masks", "passing", "results"):
-                            if key in blob:
-                                return blob[key]
-                except json.JSONDecodeError:
-                    pass
+        """
+        Robustly extract a mask list from Claude's final response.
+
+        Handles:
+        - clean JSON:  {"masks": [...]}
+        - bare list:   [{"label": ...}, ...]
+        - trailing text after the JSON block
+        """
+        # Try to extract a JSON object first (most expected case)
+        obj_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if obj_match:
+            try:
+                blob = json.loads(obj_match.group())
+                for key in ("masks", "passing", "results"):
+                    if key in blob and isinstance(blob[key], list):
+                        return blob[key]
+            except json.JSONDecodeError:
+                pass
+
+        # Fall back to a bare JSON array
+        arr_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if arr_match:
+            try:
+                blob = json.loads(arr_match.group())
+                if isinstance(blob, list):
+                    return blob
+            except json.JSONDecodeError:
+                pass
+
         return []

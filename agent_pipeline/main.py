@@ -100,11 +100,11 @@ def main() -> None:
 
     try:
         # ── Stage 1 ───────────────────────────────────────────────────────────
-        scene = run_stage1(
-            image_path=str(image_path),
-            prompt=args.prompt,
-            run_directory=workspace,
-        )
+        # scene = run_stage1(
+        #     image_path=str(image_path),
+        #     prompt=args.prompt,
+        #     run_directory=workspace,
+        # )
 
         # ── Stage 2 ───────────────────────────────────────────────────────────
         blender_script = run_stage2(

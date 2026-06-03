@@ -3,260 +3,320 @@ stage2/material_agent.py
 
 Material Classification Agent
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Analyses the reconstructed scene objects and the simulation prompt to assign
-physical material properties to each object.
+Classifies physical material properties for a single scene object by
+sending its annotated image alongside the simulation prompt to a
+vision-capable Claude model.
+
+Inputs (per call)
+─────────────────
+  annotated_image_path  — path to the image with the object highlighted
+  object_label          — string identifier for the object
+  simulation_prompt     — user's original simulation description
+
+Output (per call)
+─────────────────
+{
+  "<object_label>": {
+    "material_type": "rigid",
+    "sub_type":      "metal",
+    "params": {
+      "mass":        2.0,   # kg
+      "friction":    0.5,   # 0–1
+      "restitution": 0.1    # 0–1
+    }
+  }
+}
 
 Material types
 ──────────────
-  rigid        — non-deforming solids (metal, wood, rock, plastic, glass)
-  fluid        — liquids and gases (water, oil, smoke, fire)
-  deformable   — soft bodies (cloth, rubber, jelly, biological tissue)
-  granular     — particulate matter (sand, gravel, powder)
-
-For each object the agent produces a ``material_spec`` dict consumed directly
-by the Blender exporter.
-
-Tools exposed to Claude
-───────────────────────
-  classify_material      — assign type + sub-type per object
-  assign_physics_params  — set density, friction, restitution, viscosity, etc.
-  compile_material_map   — merge into a final scene material map
+  rigid      — non-deforming solids (metal, wood, rock, plastic, glass)
+  fluid      — liquids and gases   (water, oil, smoke, fire)
+  deformable — soft bodies         (cloth, rubber, jelly, tissue)
+  granular   — particulate matter  (sand, gravel, powder)
 """
-
+# ── Qwen3.5-4B via local vLLM / OpenAI-compatible endpoint ───────────────
+# Server launched with:
+#   vllm serve Qwen/Qwen3.5-4B-Instruct \
+#     --tensor-parallel-size 1 \
+#     --max-model-len 1048576 \
+#     --trust-remote-code \
+#     --reasoning-parser qwen          # separates <think> from final content
 from __future__ import annotations
 
+import base64
 import json
+import re
 from pathlib import Path
+from typing import Optional
+
+import anthropic
 
 import sys
+import os
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils.shared import ClaudeAgent, get_logger, save_state
+from utils.shared import get_logger
 
 _log = get_logger("stage2.material")
-
+_VISION_MODEL   = "gpt-5.1"
+_VISION_MODEL   = "gpt-4o"
+_VISION_MODEL   = "qwen3-small"
+# _VISION_MODEL   = "gpt-oss"
+# _VLLM_BASE_URL  = "http://localhost:8000/v1"   # adjust if remote
+_VLLM_BASE_URL  = os.environ.get("OPENAI_BASE_URL")   # adjust if remote
+_VLLM_API_KEY   = os.environ.get("OPENAI_API_KEY")   or "EMPTY"                  # vLLM ignores this value
 SYSTEM_PROMPT = """
-You are the Material Classification Agent in a physics-simulation pipeline.
+You are a material-classification expert embedded in a physics-simulation pipeline.
+You will receive:
+  1. An image of a scene with ONE object highlighted or annotated.
+  2. A simulation prompt describing the physical scenario.
+  3. The object's label.
 
-Your job:
-1. Examine each object in the reconstructed scene.
-2. Consider the simulation prompt to understand the physical context.
-3. Call classify_material for each object.
-4. Call assign_physics_params for each object to set numerical properties.
-5. Call compile_material_map to produce the final material assignment.
+Your task:
+  - Identify the material of the highlighted object from its visual appearance,
+    shape, context, and the simulation prompt.
+  - Assign a material_type and a more specific sub_type.
+  - Assign an object class (e.g. "glass_bottle", "rubber_ball", "wooden_table") based on what you see.
+  - Predict physically realistic simulation parameters:
+      mass        (kg)  — realistic absolute mass for this object
+      friction    (0–1) — surface friction coefficient
+      restitution (0–1) — bounciness (0 = no bounce, 1 = perfect elastic)
 
-Material types: rigid | fluid | deformable | granular
+Material types:
+  rigid      — non-deforming solids
+  fluid      — liquids and gases
+  deformable — soft bodies
+  granular   — particulate matter
 
-Physics parameters to assign (use physically realistic values):
-  rigid:       density (kg/m³), friction_static, friction_dynamic, restitution
-  fluid:       density, viscosity (Pa·s), surface_tension (N/m)
-  deformable:  density, young_modulus (Pa), poisson_ratio, damping
-  granular:    density, friction_angle (°), cohesion (Pa)
+Guidelines:
+  - Derive values from what you actually SEE in the image plus context.
+  - Use specific, realistic numbers — never placeholder or default values.
+  - Examples of good predictions:
+      bowling ball  → rigid/ceramic,  mass=6.0,  friction=0.15, restitution=0.05
+      rubber ball   → rigid/rubber,   mass=0.06, friction=0.8,  restitution=0.85
+      throw pillow  → deformable/foam,mass=0.4,  friction=0.6,  restitution=0.05
+      glass bottle  → rigid/glass,    mass=0.5,  friction=0.4,  restitution=0.05
+      sand pile     → granular/sand,  mass=5.0,  friction=0.55, restitution=0.02
 
-Return a JSON object with key "material_map":
+Return ONLY valid JSON — no prose, no markdown fences:
 {
-  "material_map": {
-    "<object_label>": {
-      "material_type": "rigid",
-      "sub_type": "metal",
-      "params": { ... }
-    }
+  "material_type": "rigid",
+  "sub_type": "metal",
+  "object_class": "shiny_metal_pan",
+  "params": {
+    "mass": 2.0,
+    "friction": 0.5,
+    "restitution": 0.1
   }
 }
 """
 
-# Default physical parameters by material type
-DEFAULTS: dict[str, dict] = {
-    "rigid": {
-        "density": 1000.0,
-        "friction_static": 0.5,
-        "friction_dynamic": 0.4,
-        "restitution": 0.3,
-    },
-    "fluid": {
-        "density": 1000.0,
-        "viscosity": 0.001,
-        "surface_tension": 0.0728,
-    },
-    "deformable": {
-        "density": 900.0,
-        "young_modulus": 1e6,
-        "poisson_ratio": 0.45,
-        "damping": 0.01,
-    },
-    "granular": {
-        "density": 1600.0,
-        "friction_angle": 30.0,
-        "cohesion": 0.0,
-    },
-}
+
+def _call_qwen(user_content: list[dict]) -> tuple[str, str]:
+    """
+    Call the Qwen3.5-4B vision model with thinking enabled.
+
+    Returns
+    -------
+    (reasoning_content, answer_content)
+        reasoning_content — the model's internal <think> trace (may be "")
+        answer_content    — the final JSON answer
+    """
+    from openai import OpenAI
+
+    client = OpenAI(
+        base_url=_VLLM_BASE_URL,
+        api_key=_VLLM_API_KEY,
+    )
+
+    # user_content = "hello"
+    # print(user_content)
+
+    response = client.chat.completions.create(
+        model=_VISION_MODEL,
+        messages=[
+            # System role injected as first user turn because some
+            # vLLM builds drop the system field in multimodal mode.
+            {
+                "role": "system",
+                "content": SYSTEM_PROMPT,
+            },
+            {
+                "role": "user",
+                "content": user_content,   # list with image_url + text blocks
+            },
+        ],
+        max_tokens=8192,        # budget: up to ~6 k think + ~512 answer
+        temperature=1.0,        # recommended for thinking mode (Qwen docs)
+        top_p=0.95,
+        presence_penalty=1.5,   # reduces repetition in long think traces
+        extra_body={
+            "top_k": 20,
+            "chat_template_kwargs": {
+                "enable_thinking": True,    # emit <think>…</think> block
+            },
+        },
+    )
+
+    msg = response.choices[0].message
+
+    # reasoning_content is populated only when --reasoning-parser qwen
+    # is active on the server AND enable_thinking=True was passed.
+    reasoning = getattr(msg, "reasoning_content", "") or ""
+    answer    = msg.content or ""
+
+    return reasoning, answer
 
 
-class MaterialClassificationAgent(ClaudeAgent):
+
+class MaterialClassificationAgent:
+    """
+    Classify one object at a time using vision inference.
+
+    Usage
+    -----
+    agent = MaterialClassificationAgent()
+    result = agent.classify_object(
+        annotated_image_path=Path("run/annotated/bottle.png"),
+        object_label="glass_bottle",
+        simulation_prompt="A bottle falls off a table onto a wooden floor.",
+    )
+    """
+
     name = "material_agent"
 
     def __init__(self) -> None:
-        super().__init__()
-        self._material_map: dict[str, dict] = {}
+        self._client = anthropic.Anthropic()
 
-        self.tools = [
+    # ─────────────────────────────────────────────────────────────
+    # Public API
+    # ─────────────────────────────────────────────────────────────
+
+    def classify_object(
+        self,
+        annotated_image_path: Path,
+        object_label: str,
+        simulation_prompt: str,
+    ) -> dict:
+        _log.info("Classifying material for '%s'", object_label)
+
+        image_data, media_type = self._load_image(annotated_image_path)
+        _log.info(
+            "Image loaded: path=%s media_type=%s b64_len=%d",
+            annotated_image_path, media_type, len(image_data)
+        )
+        if len(image_data) < 100:
+            raise ValueError(f"Image data suspiciously small for {annotated_image_path}")
+        # Build OpenAI-style multimodal content list
+        user_content = [
             {
-                "name": "classify_material",
-                "description": (
-                    "Assign a material type and sub-type to a single scene object "
-                    "based on its label and the simulation context."
-                ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "label": {"type": "string"},
-                        "simulation_prompt": {"type": "string"},
-                        "mesh_info": {
-                            "type": "object",
-                            "description": "Mesh metadata (vertex_count, bounding_box, etc.)",
-                        },
-                    },
-                    "required": ["label", "simulation_prompt"],
+                "type": "image_url",
+                "image_url": {
+                    # vLLM accepts base64 data URIs
+                    "url": f"data:{media_type};base64,{image_data}",
                 },
             },
             {
-                "name": "assign_physics_params",
-                "description": (
-                    "Set numerical physics parameters for an object given its "
-                    "material type and sub-type."
+                "type": "text",
+                "text": (
+                    f"Object label: {object_label}\n"
+                    f"Simulation prompt: {simulation_prompt}\n\n"
+                    "Classify the highlighted object and predict its "
+                    "physics parameters."
                 ),
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "label": {"type": "string"},
-                        "material_type": {
-                            "type": "string",
-                            "enum": ["rigid", "fluid", "deformable", "granular"],
-                        },
-                        "sub_type": {
-                            "type": "string",
-                            "description": "e.g. 'metal', 'water', 'cloth', 'sand'",
-                        },
-                        "overrides": {
-                            "type": "object",
-                            "description": "Any parameter values that differ from defaults.",
-                        },
-                    },
-                    "required": ["label", "material_type", "sub_type"],
-                },
-            },
-            {
-                "name": "compile_material_map",
-                "description": "Merge all per-object classifications into one material map.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "entries": {
-                            "type": "array",
-                            "items": {"type": "object"},
-                        },
-                    },
-                    "required": ["entries"],
-                },
             },
         ]
 
-        self.tool_handlers = {
-            "classify_material": self._classify_material,
-            "assign_physics_params": self._assign_physics_params,
-            "compile_material_map": self._compile_material_map,
-        }
+        reasoning, raw_text = _call_qwen(user_content)
 
-    # ── public ────────────────────────────────────────────────────────────────
-
-    def classify_scene(
-        self,
-        scene: dict,
-        prompt: str,
-        run_directory: Path,
-    ) -> dict[str, dict]:
-        """Classify materials for all objects; write ``material_map.json``."""
-        objects = scene.get("objects", [])
-        user_msg = (
-            f"Simulation prompt: {prompt}\n\n"
-            f"Scene objects ({len(objects)}):\n"
-            + json.dumps(
-                [{k: v for k, v in o.items() if k != "mesh_path"} for o in objects],
-                indent=2,
+        if reasoning:
+            _log.debug(
+                "Reasoning trace for '%s' (%d chars): %s…",
+                object_label,
+                len(reasoning),
+                reasoning[:200],
             )
-            + "\n\nClassify materials and assign physics parameters for all objects."
+
+        _log.debug("Answer for '%s': %s", object_label, raw_text)
+
+        spec = self._parse_spec(raw_text, object_label)
+
+        _log.info(
+            "  %s → %s/%s  mass=%.2f  friction=%.2f  restitution=%.2f",
+            object_label,
+            spec["material_type"],
+            spec["sub_type"],
+            spec["params"]["mass"],
+            spec["params"]["friction"],
+            spec["params"]["restitution"],
         )
 
-        raw_response = self.run(system=SYSTEM_PROMPT, user_message=user_msg)
-        mat_map = self._parse_map(raw_response)
+        return spec
 
-        if not mat_map and self._material_map:
-            mat_map = self._material_map
-
-        save_state(run_directory, "material_map", {"material_map": mat_map})
-        _log.info("Material map: %s", {k: v["material_type"] for k, v in mat_map.items()})
-        return mat_map
-
-    # ── tool handlers ─────────────────────────────────────────────────────────
-
-    def _classify_material(
-        self,
-        label: str,
-        simulation_prompt: str,
-        mesh_info: dict | None = None,
-    ) -> dict:
-        _log.info("classify_material: %s", label)
-        # Claude will use its own reasoning; we just confirm receipt
-        return {
-            "status": "ok",
-            "label": label,
-            "instruction": (
-                "Use your knowledge of common materials and the simulation context "
-                "to assign material_type and sub_type, then call assign_physics_params."
-            ),
-        }
-
-    def _assign_physics_params(
-        self,
-        label: str,
-        material_type: str,
-        sub_type: str,
-        overrides: dict | None = None,
-    ) -> dict:
-        _log.info("assign_physics_params: %s → %s/%s", label, material_type, sub_type)
-        params = dict(DEFAULTS.get(material_type, {}))
-        if overrides:
-            params.update(overrides)
-
-        entry = {
-            "label": label,
-            "material_type": material_type,
-            "sub_type": sub_type,
-            "params": params,
-        }
-        self._material_map[label] = entry
-        return {"status": "ok", "entry": entry}
-
-    def _compile_material_map(self, entries: list[dict]) -> dict:
-        for entry in entries:
-            lbl = entry.get("label", "unknown")
-            self._material_map[lbl] = entry
-        return {"status": "ok", "material_map": self._material_map}
-
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
+    # Private helpers
+    # ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _parse_map(text: str) -> dict[str, dict]:
-        for start in ["{"]:
-            idx = text.find(start)
-            if idx != -1:
-                try:
-                    blob = json.loads(text[idx:])
-                    if "material_map" in blob:
-                        return blob["material_map"]
-                    # If it looks like a map of label → spec
-                    first = next(iter(blob.values()), None)
-                    if isinstance(first, dict) and "material_type" in first:
-                        return blob
-                except json.JSONDecodeError:
-                    pass
-        return {}
+    def _load_image(path: Path) -> tuple[str, str]:
+        """
+        Load an image file and return (base64_data, media_type).
+        Supports JPEG and PNG.
+        """
+        path = Path(path)
+        suffix = path.suffix.lower()
+
+        media_type_map = {
+            ".jpg":  "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png":  "image/png",
+            ".webp": "image/webp",
+            ".gif":  "image/gif",
+        }
+        media_type = media_type_map.get(suffix, "image/jpeg")
+
+        with open(path, "rb") as fh:
+            data = base64.standard_b64encode(fh.read()).decode("utf-8")
+
+        return data, media_type
+
+    @staticmethod
+    def _parse_spec(text: str, label: str) -> dict:
+        """
+        Extract and validate the material spec JSON from model output.
+        Strips markdown fences if present, then parses JSON.
+        """
+        # Strip ```json ... ``` or ``` ... ``` fences
+        text = re.sub(r"```[a-zA-Z]*\n?", "", text).strip()
+
+        # Find the outermost JSON object
+        start = text.find("{")
+        end   = text.rfind("}")
+        if start == -1 or end == -1:
+            raise ValueError(
+                f"No JSON object found in model response for '{label}': {text!r}"
+            )
+
+        blob = json.loads(text[start : end + 1])
+
+        # Validate required keys
+        required_top   = {"material_type", "sub_type", "params"}
+        required_params = {"mass", "friction", "restitution"}
+
+        missing_top = required_top - blob.keys()
+        if missing_top:
+            raise ValueError(
+                f"Model response for '{label}' missing keys: {missing_top}"
+            )
+
+        missing_params = required_params - blob["params"].keys()
+        if missing_params:
+            raise ValueError(
+                f"Model response for '{label}' params missing: {missing_params}"
+            )
+
+        # Clamp friction and restitution to [0, 1]
+        blob["params"]["friction"]    = max(0.0, min(1.0, float(blob["params"]["friction"])))
+        blob["params"]["restitution"] = max(0.0, min(1.0, float(blob["params"]["restitution"])))
+        blob["params"]["mass"]        = max(0.0, float(blob["params"]["mass"]))
+
+        return blob

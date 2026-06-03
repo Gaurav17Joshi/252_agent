@@ -1,0 +1,48 @@
+{
+  "relevant_objects": [
+    {
+      "label": "white ball",
+      "relevance_score": 0.95,
+      "reason": "The rolling projectile that initiates the collision.",
+      "bbox": [
+        951,
+        1952,
+        1236,
+        2231
+      ]
+    },
+    {
+      "label": "white square bottle",
+      "relevance_score": 0.95,
+      "reason": "The target object that gets knocked over by the ball.",
+      "bbox": [
+        2178,
+        1484,
+        2756,
+        2329
+      ]
+    },
+    {
+      "label": "red surface",
+      "relevance_score": 0.9,
+      "reason": "The surface on which the ball rolls and the bottle stands; directly involved in the motion and collision.",
+      "bbox": [
+        549,
+        2043,
+        3368,
+        2489
+      ]
+    },
+    {
+      "label": "gray table/counter surface",
+      "relevance_score": 0.6,
+      "reason": "The physical support beneath the red surface; may indirectly affect how objects move if they fall off the red surface.",
+      "bbox": [
+        0,
+        2412,
+        3685,
+        4496
+      ]
+    }
+  ]
+}

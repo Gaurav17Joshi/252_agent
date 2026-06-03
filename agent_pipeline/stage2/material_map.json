@@ -1,0 +1,14 @@
+{
+  "material_map": {
+    "obj_0": {
+      "material_type": "rigid",
+      "sub_type": "fabric",
+      "object_class": "sofa",
+      "params": {
+        "mass": 55.0,
+        "friction": 0.7,
+        "restitution": 0.05
+      }
+    }
+  }
+}
