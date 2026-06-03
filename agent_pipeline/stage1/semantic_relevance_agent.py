@@ -297,21 +297,25 @@ class SemanticRelevanceAgent(ClaudeAgent):
 
 if __name__ == "__main__":
     import glob as _glob
+    from utils.sam2_wrapper import load_masks_from_npz
 
-    image  = os.environ.get("TEST_IMAGE", "scene.jpg")
-    prompt = os.environ.get(
+    image   = os.environ.get("TEST_IMAGE",  "scene.jpg")
+    npz     = os.environ.get("TEST_MASKS",  "masks.npz")
+    prompt  = os.environ.get(
         "TEST_PROMPT",
         "A white ball rolls from the left and knocks over a bottle on a red surface",
     )
     out_dir = Path("./test_run")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build a synthetic mask list from any PNG files in ./masks/
-    mask_pngs = sorted(_glob.glob("masks/*.png"))
-    if not mask_pngs:
-        print("No mask PNGs found — place mask files in ./masks/ to test.")
+    # ── load masks: prefer NPZ, fall back to PNG files in ./masks/ ────────────
+    if Path(npz).exists():
+        print(f"Loading masks from NPZ: {npz}")
+        masks = load_masks_from_npz(npz_path=npz, mask_output_dir=out_dir / "masks")
     else:
-        fake_masks = [
+        print(f"NPZ not found ({npz}), falling back to masks/*.png")
+        mask_pngs = sorted(_glob.glob("masks/*.png"))
+        masks = [
             {
                 "idx":        i,
                 "mask_path":  p,
@@ -322,10 +326,14 @@ if __name__ == "__main__":
             for i, p in enumerate(mask_pngs)
         ]
 
+    if not masks:
+        print("No masks found. Provide masks.npz or PNG files in ./masks/")
+    else:
+        print(f"Loaded {len(masks)} mask(s) — running agent...")
         agent  = SemanticRelevanceAgent()
         result = agent.run_for_scene(
             image_path=image,
-            masks=fake_masks,
+            masks=masks,
             prompt=prompt,
             run_directory=out_dir,
         )

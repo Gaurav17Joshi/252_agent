@@ -163,6 +163,69 @@ def decode_mask(rle: str, h: int, w: int) -> np.ndarray:
     return flat.reshape((h, w), order="F")
 
 
+# ── NPZ loader ───────────────────────────────────────────────────────────────
+
+def load_masks_from_npz(
+    npz_path: str | Path,
+    mask_output_dir: str | Path | None = None,
+) -> list[dict]:
+    """
+    Load SAM2 masks saved by the automatic mask generator notebook.
+
+    The notebook saves with::
+
+        np.savez("masks.npz", masks=masks2)
+
+    where ``masks2`` is a list of dicts, each containing:
+      segmentation   — bool (H, W)
+      area           — int
+      bbox           — [x, y, w, h]  (XYWH)
+      predicted_iou  — float
+      stability_score — float
+
+    Returns a list of mask dicts compatible with SemanticRelevanceAgent:
+      idx, mask_path, confidence, area, bbox ([x1,y1,x2,y2]), rle
+    """
+    npz_path = Path(npz_path)
+    if not npz_path.exists():
+        raise FileNotFoundError(f"NPZ file not found: {npz_path}")
+
+    if mask_output_dir is None:
+        mask_output_dir = npz_path.parent / "masks"
+    mask_output_dir = Path(mask_output_dir)
+    mask_output_dir.mkdir(parents=True, exist_ok=True)
+
+    data       = np.load(npz_path, allow_pickle=True)
+    raw_masks  = data["masks"]          # numpy object array of dicts
+
+    results: list[dict] = []
+    for idx, m in enumerate(raw_masks):
+        seg  = m["segmentation"].astype(bool)
+        area = int(m["area"])
+
+        # Convert XYWH → XYXY
+        x, y, w, h = m["bbox"]
+        bbox = [int(x), int(y), int(x + w), int(y + h)]
+
+        confidence = float(m.get("predicted_iou", 0.0))
+
+        label     = f"region_{idx:03d}"
+        mask_path = _save_mask(seg, label, mask_output_dir)
+        rle       = _mask_to_rle(seg)
+
+        results.append({
+            "idx":        idx,
+            "mask_path":  str(mask_path),
+            "confidence": confidence,
+            "area":       area,
+            "bbox":       bbox,
+            "rle":        rle,
+        })
+
+    _log.info("load_masks_from_npz: loaded %d masks from %s", len(results), npz_path.name)
+    return results
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 def _get_mask_center(mask: np.ndarray) -> tuple[float, float]:
