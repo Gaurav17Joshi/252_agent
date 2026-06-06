@@ -32,6 +32,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import config as cfg
 from utils.shared import ClaudeAgent, get_logger, save_state
 
+# OpenAI-compatible client (used by Kimi and other non-Anthropic endpoints)
+_OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
+_OPENAI_API_KEY  = os.environ.get("OPENAI_API_KEY")  or os.environ.get("ANTHROPIC_API_KEY", "")
+
 _log = get_logger("stage1.semantic_relevance")
 
 _EVAL_SYSTEM = f"""
@@ -244,7 +248,8 @@ class SemanticRelevanceAgent(ClaudeAgent):
         prompt: str,
     ) -> dict:
         """
-        Build an overlay image for this mask and ask Claude whether to keep it.
+        Build an overlay image for this mask and ask the model whether to keep it.
+        Uses OpenAI-compatible image_url format (works with Kimi, Qwen, GPT-4o, etc.).
         """
         mask_path = mask_info["mask_path"]
 
@@ -255,19 +260,15 @@ class SemanticRelevanceAgent(ClaudeAgent):
             _log.error("Failed to build overlay for %s: %s", mask_path, exc)
             return {"keep": False, "label": "unknown", "reason": str(exc), "relevance_score": 0.0}
 
-        # Encode overlay as base64
         overlay_data, overlay_media = _encode_image(overlay_path)
-
         area       = mask_info.get("area", "unknown")
         confidence = mask_info.get("confidence", 0.0)
 
         user_content = [
             {
-                "type": "image",
-                "source": {
-                    "type":       "base64",
-                    "media_type": overlay_media,
-                    "data":       overlay_data,
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{overlay_media};base64,{overlay_data}",
                 },
             },
             {
@@ -282,14 +283,19 @@ class SemanticRelevanceAgent(ClaudeAgent):
             },
         ]
 
-        response = self.client.messages.create(
+        from openai import OpenAI
+        oa_client = OpenAI(base_url=_OPENAI_BASE_URL, api_key=_OPENAI_API_KEY)
+
+        response = oa_client.chat.completions.create(
             model=cfg.CLAUDE_MODEL,
             max_tokens=512,
-            system=_EVAL_SYSTEM,
-            messages=[{"role": "user", "content": user_content}],
+            messages=[
+                {"role": "system",  "content": _EVAL_SYSTEM},
+                {"role": "user",    "content": user_content},
+            ],
         )
 
-        raw = response.content[0].text if response.content else "{}"
+        raw = response.choices[0].message.content if response.choices else "{}"
         return _parse_decision(raw)
 
 
