@@ -28,6 +28,11 @@ SAM2_CONFIG: str = os.environ.get(
     "sam2_hiera_l.yaml",
 )
 
+# ── SAM3 (text-prompted segmentation) ────────────────────────────────────────
+# Set SAM3_CHECKPOINT env var to the path of the downloaded SAM3 weights.
+# If empty, build_sam3_image_model() uses its default checkpoint location.
+SAM3_CHECKPOINT: str = os.environ.get("SAM3_CHECKPOINT", "")
+
 # ── SAM3D (local) ─────────────────────────────────────────────────────────────
 SAM3D_CHECKPOINT: str = os.environ.get(
     "SAM3D_CHECKPOINT",
